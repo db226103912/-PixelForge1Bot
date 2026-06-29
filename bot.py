@@ -111,13 +111,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Send any image\n"
         "• Choose new size\n\n"
         "**💰 Usage**\n"
-        "• {DAILY_LIMIT} images per day\n"
+        f"• {DAILY_LIMIT} images per day\n"
         "• Resets at midnight UTC\n\n"
         "**Commands**\n"
         "/start - Start the bot\n"
         "/help - Show this help\n"
         "/usage - Check your usage"
-    ).format(DAILY_LIMIT=DAILY_LIMIT)
+    )
     
     await update.message.reply_text(
         help_text, 
@@ -265,7 +265,7 @@ async def generate_image(prompt: str, size: str = "512x512"):
         clean_prompt = prompt.strip().replace(" ", "%20")
         width, height = size.split("x")
         
-        # Pollinations.ai URL
+        # Pollinations.ai URL with seed for consistency
         url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={width}&height={height}&nologo=true&seed={int(datetime.now().timestamp())}"
         
         async with aiohttp.ClientSession() as session:
@@ -298,7 +298,10 @@ async def resize_image(image_data: bytes, target_size: str):
         
         # Convert RGBA to RGB if needed (for JPG)
         if img.mode == 'RGBA':
-            img = img.convert('RGB')
+            # Create white background
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
             
         # Resize
         img_resized = img.resize((width, height), Image.Resampling.LANCZOS)
@@ -321,7 +324,6 @@ async def convert_image(image_data: bytes, target_format: str):
         
         # Convert RGBA to RGB for JPG
         if target_format.upper() == 'JPG' and img.mode == 'RGBA':
-            # Create white background
             background = Image.new('RGB', img.size, (255, 255, 255))
             background.paste(img, mask=img.split()[3])
             img = background
