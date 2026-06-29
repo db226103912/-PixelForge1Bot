@@ -2,7 +2,9 @@ import os
 import io
 import asyncio
 import aiohttp
-from datetime import datetime
+import tempfile
+from datetime import datetime, timedelta
+from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
@@ -11,13 +13,30 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN environment variable not set!")
 
-# FREE AI IMAGE GENERATION APIS (use one or all)
-# 1. Pollinations.ai - completely free, no API key needed
-# 2. Lexica API - free tier available
-# 3. Stable Diffusion via HuggingFace - requires free token
-
-# We'll use Pollinations.ai (no API key needed) as primary
+# Free AI Image Generation API (Pollinations.ai - no API key needed)
 POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
+
+# User usage tracking (in-memory, resets daily)
+user_usage = {}
+DAILY_LIMIT = 10
+
+# ==================== HELPER FUNCTIONS ====================
+def get_user_usage(user_id):
+    """Get user's daily usage count"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"{user_id}_{today}"
+    return user_usage.get(key, 0)
+
+def increment_user_usage(user_id):
+    """Increment user's usage count"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    key = f"{user_id}_{today}"
+    user_usage[key] = user_usage.get(key, 0) + 1
+    return user_usage[key]
+
+def get_remaining_usage(user_id):
+    """Get remaining usage for today"""
+    return max(0, DAILY_LIMIT - get_user_usage(user_id))
 
 # ==================== KEYBOARD FUNCTIONS ====================
 def get_main_keyboard():
@@ -25,27 +44,33 @@ def get_main_keyboard():
         [InlineKeyboardButton("🎨 Generate Image", callback_data="generate")],
         [InlineKeyboardButton("📐 Resize Image", callback_data="resize")],
         [InlineKeyboardButton("🔄 Convert Format", callback_data="convert")],
+        [InlineKeyboardButton("📊 Usage", callback_data="usage")],
         [InlineKeyboardButton("ℹ️ Help", callback_data="help")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_size_keyboard():
     keyboard = [
-        [InlineKeyboardButton("512x512", callback_data="size_512"), 
-         InlineKeyboardButton("768x768", callback_data="size_768")],
-        [InlineKeyboardButton("1024x1024", callback_data="size_1024"), 
-         InlineKeyboardButton("Square 1:1", callback_data="size_1_1")],
+        [InlineKeyboardButton("🔲 512x512", callback_data="size_512"), 
+         InlineKeyboardButton("🔳 768x768", callback_data="size_768")],
+        [InlineKeyboardButton("⬜ 1024x1024", callback_data="size_1024")],
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 def get_format_keyboard():
     keyboard = [
-        [InlineKeyboardButton("PNG", callback_data="format_png"), 
-         InlineKeyboardButton("JPG", callback_data="format_jpg")],
-        [InlineKeyboardButton("WEBP", callback_data="format_webp"), 
-         InlineKeyboardButton("GIF", callback_data="format_gif")],
+        [InlineKeyboardButton("🟦 PNG", callback_data="format_png"), 
+         InlineKeyboardButton("🟨 JPG", callback_data="format_jpg")],
+        [InlineKeyboardButton("🟩 WEBP", callback_data="format_webp")],
         [InlineKeyboardButton("🔙 Back", callback_data="back")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_generate_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("🔄 Try Different Size", callback_data="size_menu")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="back")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -53,56 +78,70 @@ def get_format_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     user = update.effective_user
+    remaining = get_remaining_usage(str(user.id))
+    
     welcome_message = (
-        f"✨ Welcome {user.first_name} to PixelForgeBot!\n\n"
-        "🖼️ I can generate images using AI for free!\n"
-        "📤 Send any image to convert or resize it\n"
-        "🎨 Use the buttons below to get started\n\n"
-        "⚠️ Free plan: 10 images per day"
+        f"✨ Welcome {user.first_name} to **PixelForgeBot**!\n\n"
+        f"🎨 I generate images using AI for FREE!\n"
+        f"📤 Send any image to convert or resize it\n\n"
+        f"📊 **Daily Limit**: {remaining} images remaining today\n\n"
+        "⬇️ Use the buttons below to get started!"
     )
-    await update.message.reply_text(welcome_message, reply_markup=get_main_keyboard())
+    await update.message.reply_text(
+        welcome_message, 
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
     help_text = (
-        "📖 **How to use PixelForgeBot**\n\n"
-        "**AI Image Generation**\n"
-        "1. Click 'Generate Image'\n"
-        "2. Send me a text description\n"
-        "3. Choose size and format\n\n"
-        "**Image Tools**\n"
-        "• Send any image to convert format\n"
-        "• Send an image with 'resize' to change size\n\n"
-        "**Available Commands**\n"
+        "📖 **PixelForgeBot User Guide**\n\n"
+        "**🎨 Generate AI Images**\n"
+        "• Click 'Generate Image'\n"
+        "• Type your prompt\n"
+        "• Choose size\n"
+        "• Wait for magic! ✨\n\n"
+        "**🔄 Convert Image Format**\n"
+        "• Click 'Convert Format'\n"
+        "• Send any image\n"
+        "• Choose output format\n\n"
+        "**📐 Resize Image**\n"
+        "• Click 'Resize Image'\n"
+        "• Send any image\n"
+        "• Choose new size\n\n"
+        "**💰 Usage**\n"
+        "• {DAILY_LIMIT} images per day\n"
+        "• Resets at midnight UTC\n\n"
+        "**Commands**\n"
         "/start - Start the bot\n"
         "/help - Show this help\n"
-        "/status - Check your usage\n"
-        "/generate - Generate an image\n\n"
-        "💰 **Free Tier**: 10 images/day\n"
-        "⏰ Resets at midnight UTC"
+        "/usage - Check your usage"
+    ).format(DAILY_LIMIT=DAILY_LIMIT)
+    
+    await update.message.reply_text(
+        help_text, 
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check user's remaining daily usage"""
+async def usage_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /usage command"""
     user_id = str(update.effective_user.id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    usage_key = f"{user_id}_{today}"
-    
-    # Initialize or get usage
-    if context.user_data.get(usage_key) is None:
-        context.user_data[usage_key] = 0
-    
-    used = context.user_data[usage_key]
-    remaining = max(0, 10 - used)
+    used = get_user_usage(user_id)
+    remaining = DAILY_LIMIT - used
     
     status_text = (
         f"📊 **Your Usage**\n\n"
-        f"Used today: {used}/10\n"
-        f"Remaining: {remaining}/10\n\n"
+        f"Used today: {used}/{DAILY_LIMIT}\n"
+        f"Remaining: {remaining}/{DAILY_LIMIT}\n\n"
         f"🔄 Resets at midnight UTC"
     )
-    await update.message.reply_text(status_text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await update.message.reply_text(
+        status_text, 
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
 
 # ==================== CALLBACK QUERY HANDLERS ====================
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -111,12 +150,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     data = query.data
+    user_id = str(update.effective_user.id)
     
     if data == "generate":
+        remaining = get_remaining_usage(user_id)
+        if remaining <= 0:
+            await query.edit_message_text(
+                "⚠️ **Daily limit reached!**\n\n"
+                f"You've used {DAILY_LIMIT} images today.\n"
+                "Come back tomorrow for more 🎨",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            return
+            
         await query.edit_message_text(
-            "🎨 **Send me a description**\n\n"
-            "Example: 'A cat wearing a spacesuit on Mars'\n\n"
-            "I'll generate it for you! 🚀",
+            "🎨 **Describe your image**\n\n"
+            "Send me a prompt like:\n"
+            "• 'A cat wearing a spacesuit on Mars'\n"
+            "• 'Beautiful sunset over mountains'\n"
+            "• 'Cyberpunk city at night'\n\n"
+            "Choose size first:",
             parse_mode="Markdown",
             reply_markup=get_size_keyboard()
         )
@@ -125,113 +179,196 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "resize":
         await query.edit_message_text(
             "📐 **Send me an image**\n\n"
-            "Reply with:\n"
-            "• '512' for 512x512\n"
-            "• '768' for 768x768\n"
-            "• '1024' for 1024x1024\n\n"
-            "Example: Send image with caption '768'",
+            "Then choose the new size:",
+            parse_mode="Markdown",
             reply_markup=get_size_keyboard()
         )
         context.user_data["action"] = "resize"
         
     elif data == "convert":
         await query.edit_message_text(
-            "🔄 **Send me an image to convert**\n\n"
-            "Choose output format:",
+            "🔄 **Send me an image**\n\n"
+            "Choose the output format:",
+            parse_mode="Markdown",
             reply_markup=get_format_keyboard()
         )
         context.user_data["action"] = "convert"
         
-    elif data.startswith("size_"):
-        size_map = {
-            "size_512": "512x512",
-            "size_768": "768x768", 
-            "size_1024": "1024x1024",
-            "size_1_1": "512x512"
-        }
-        context.user_data["size"] = size_map.get(data, "512x512")
+    elif data == "usage":
+        used = get_user_usage(user_id)
+        remaining = DAILY_LIMIT - used
         await query.edit_message_text(
-            f"✅ Size set to {context.user_data['size']}\n\n"
-            "Now send me a prompt to generate an image! ✨"
+            f"📊 **Your Usage**\n\n"
+            f"Used today: {used}/{DAILY_LIMIT}\n"
+            f"Remaining: {remaining}/{DAILY_LIMIT}\n\n"
+            f"🔄 Resets at midnight UTC",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
         )
-        context.user_data["action"] = "generate_ready"
-        
-    elif data.startswith("format_"):
-        format_map = {
-            "format_png": "png",
-            "format_jpg": "jpg",
-            "format_webp": "webp",
-            "format_gif": "gif"
-        }
-        context.user_data["format"] = format_map.get(data, "png")
-        await query.edit_message_text(
-            f"✅ Format set to {context.user_data['format']}\n\n"
-            "Send an image to convert! 📸"
-        )
-        context.user_data["action"] = "convert_ready"
         
     elif data == "help":
         await help_command(update, context)
         
     elif data == "back":
         await query.edit_message_text(
-            "🔙 Back to main menu",
+            "🏠 **Main Menu**",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
         context.user_data["action"] = None
+        
+    elif data == "size_menu":
+        await query.edit_message_text(
+            "📐 Choose size:",
+            parse_mode="Markdown",
+            reply_markup=get_size_keyboard()
+        )
+        
+    elif data.startswith("size_"):
+        size_map = {
+            "size_512": "512x512",
+            "size_768": "768x768",
+            "size_1024": "1024x1024"
+        }
+        context.user_data["size"] = size_map.get(data, "512x512")
+        context.user_data["action"] = "generate_ready"
+        
+        await query.edit_message_text(
+            f"✅ Size set to **{context.user_data['size']}**\n\n"
+            "Now send me your prompt!\n"
+            "Example: 'A beautiful landscape' 🖼️",
+            parse_mode="Markdown",
+            reply_markup=get_generate_keyboard()
+        )
+        
+    elif data.startswith("format_"):
+        format_map = {
+            "format_png": "PNG",
+            "format_jpg": "JPG",
+            "format_webp": "WEBP"
+        }
+        context.user_data["format"] = format_map.get(data, "PNG")
+        context.user_data["action"] = "convert_ready"
+        
+        await query.edit_message_text(
+            f"✅ Format set to **{context.user_data['format']}**\n\n"
+            "Now send me an image to convert! 📸",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
 
 # ==================== IMAGE GENERATION ====================
 async def generate_image(prompt: str, size: str = "512x512"):
     """Generate image using Pollinations.ai"""
     try:
-        # Format prompt for URL
-        formatted_prompt = prompt.replace(" ", "%20")
+        # Clean and format prompt
+        clean_prompt = prompt.strip().replace(" ", "%20")
         width, height = size.split("x")
         
-        # Pollinations.ai URL (completely free, no API key)
-        url = f"https://image.pollinations.ai/prompt/{formatted_prompt}?width={width}&height={height}&nologo=true"
+        # Pollinations.ai URL
+        url = f"https://image.pollinations.ai/prompt/{clean_prompt}?width={width}&height={height}&nologo=true&seed={int(datetime.now().timestamp())}"
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
+            async with session.get(url, timeout=30) as response:
                 if response.status == 200:
                     return await response.read()
                 else:
+                    print(f"API Error: {response.status}")
                     return None
+    except asyncio.TimeoutError:
+        print("Generation timeout")
+        return None
     except Exception as e:
         print(f"Generation error: {e}")
         return None
 
+# ==================== IMAGE PROCESSING ====================
+async def resize_image(image_data: bytes, target_size: str):
+    """Resize image to target size"""
+    try:
+        # Parse size
+        if "x" in target_size:
+            width, height = map(int, target_size.split("x"))
+        else:
+            size = int(target_size)
+            width, height = size, size
+            
+        # Open image
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Convert RGBA to RGB if needed (for JPG)
+        if img.mode == 'RGBA':
+            img = img.convert('RGB')
+            
+        # Resize
+        img_resized = img.resize((width, height), Image.Resampling.LANCZOS)
+        
+        # Save to bytes
+        output = io.BytesIO()
+        img_resized.save(output, format='PNG')
+        output.seek(0)
+        
+        return output.read()
+    except Exception as e:
+        print(f"Resize error: {e}")
+        return None
+
+async def convert_image(image_data: bytes, target_format: str):
+    """Convert image to different format"""
+    try:
+        # Open image
+        img = Image.open(io.BytesIO(image_data))
+        
+        # Convert RGBA to RGB for JPG
+        if target_format.upper() == 'JPG' and img.mode == 'RGBA':
+            # Create white background
+            background = Image.new('RGB', img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])
+            img = background
+        elif target_format.upper() == 'JPG':
+            img = img.convert('RGB')
+            
+        # Save to bytes
+        output = io.BytesIO()
+        format_type = 'JPEG' if target_format.upper() == 'JPG' else target_format.upper()
+        img.save(output, format=format_type)
+        output.seek(0)
+        
+        return output.read()
+    except Exception as e:
+        print(f"Conversion error: {e}")
+        return None
+
 # ==================== MESSAGE HANDLERS ====================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text messages (prompts for image generation)"""
+    """Handle text messages"""
     user_id = str(update.effective_user.id)
-    today = datetime.now().strftime("%Y-%m-%d")
-    usage_key = f"{user_id}_{today}"
+    action = context.user_data.get("action", "")
+    prompt = update.message.text.strip()
     
-    # Initialize usage
-    if context.user_data.get(usage_key) is None:
-        context.user_data[usage_key] = 0
-    
-    # Check daily limit
-    if context.user_data[usage_key] >= 10:
-        await update.message.reply_text(
-            "⚠️ You've reached your daily limit of 10 images!\n"
-            "Come back tomorrow for more 🎨"
-        )
-        return
-    
-    action = context.user_data.get("action")
-    
-    if action == "generate_ready" or action == "generate":
-        prompt = update.message.text
+    # Check if user wants to generate
+    if action in ["generate", "generate_ready"]:
+        # Check usage
+        if get_user_usage(user_id) >= DAILY_LIMIT:
+            await update.message.reply_text(
+                "⚠️ **Daily limit reached!**\n\n"
+                f"You've used {DAILY_LIMIT} images today.\n"
+                "Come back tomorrow for more 🎨",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            return
+            
+        # Check if size is set
         size = context.user_data.get("size", "512x512")
         
         # Send processing message
         processing_msg = await update.message.reply_text(
-            f"🎨 Generating image...\n"
-            f"Prompt: '{prompt}'\n"
-            f"Size: {size}\n\n"
-            "⏳ This may take a few seconds..."
+            f"🎨 **Generating image...**\n\n"
+            f"📝 Prompt: *{prompt}*\n"
+            f"📐 Size: {size}\n\n"
+            "⏳ This may take 10-20 seconds...",
+            parse_mode="Markdown"
         )
         
         # Generate image
@@ -239,84 +376,155 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if image_data:
             # Increment usage
-            context.user_data[usage_key] += 1
+            used = increment_user_usage(user_id)
+            remaining = DAILY_LIMIT - used
             
             await processing_msg.delete()
             
             # Send generated image
             await update.message.reply_photo(
                 photo=io.BytesIO(image_data),
-                caption=f"✨ Generated from: '{prompt}'\n"
+                caption=f"✨ **Generated!**\n\n"
+                       f"📝 *{prompt}*\n"
                        f"📐 Size: {size}\n"
-                       f"📊 Usage: {context.user_data[usage_key]}/10 today",
+                       f"📊 {used}/{DAILY_LIMIT} used today",
+                parse_mode="Markdown",
                 reply_markup=get_main_keyboard()
             )
         else:
             await processing_msg.edit_text(
-                "❌ Failed to generate image.\n"
-                "Please try again with a different prompt."
+                "❌ **Failed to generate image**\n\n"
+                "Please try:\n"
+                "• A different prompt\n"
+                "• Shorter description\n"
+                "• Wait a few seconds and retry",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
             )
             
     elif action == "convert_ready":
         await update.message.reply_text(
-            "📸 Please send an image file to convert.\n"
-            f"Format: {context.user_data.get('format', 'png')}"
+            "📸 **Please send an image file**\n\n"
+            "I need an actual image to convert.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+        
+    elif action == "resize_ready":
+        await update.message.reply_text(
+            "📸 **Please send an image file**\n\n"
+            "I need an actual image to resize.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
         )
         
     else:
+        # Default response
         await update.message.reply_text(
-            "🔮 Use the buttons below or send a prompt like:\n"
-            "'A beautiful sunset over mountains'",
+            "👋 **Use the buttons below!**\n\n"
+            "Click 'Generate Image' to create AI art 🎨\n"
+            "Or send me an image to convert/resize 📸",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard()
         )
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle image messages (conversion and resize)"""
+    """Handle image messages"""
+    user_id = str(update.effective_user.id)
     action = context.user_data.get("action", "")
     
-    if "convert" in action:
-        # Get the image
+    try:
+        # Get the image file
         photo = await update.message.photo[-1].get_file()
-        image_bytes = await photo.download_as_bytearray()
+        image_data = await photo.download_as_bytearray()
         
-        format_type = context.user_data.get("format", "png")
-        
+        if action == "convert" or action == "convert_ready":
+            # Get target format
+            target_format = context.user_data.get("format", "PNG")
+            
+            # Convert image
+            await update.message.reply_text(
+                f"🔄 **Converting to {target_format}...**",
+                parse_mode="Markdown"
+            )
+            
+            converted = await convert_image(image_data, target_format)
+            
+            if converted:
+                await update.message.reply_document(
+                    document=io.BytesIO(converted),
+                    filename=f"converted.{target_format.lower()}",
+                    caption=f"✅ **Converted to {target_format}**",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ **Conversion failed**\n\n"
+                    "Please try a different image or format.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
+                
+        elif action == "resize" or action == "resize_ready":
+            # Get target size
+            target_size = context.user_data.get("size", "512x512")
+            
+            await update.message.reply_text(
+                f"📐 **Resizing to {target_size}...**",
+                parse_mode="Markdown"
+            )
+            
+            resized = await resize_image(image_data, target_size)
+            
+            if resized:
+                await update.message.reply_document(
+                    document=io.BytesIO(resized),
+                    filename=f"resized_{target_size.replace('x', 'X')}.png",
+                    caption=f"✅ **Resized to {target_size}**",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ **Resize failed**\n\n"
+                    "Please try a different image or size.",
+                    parse_mode="Markdown",
+                    reply_markup=get_main_keyboard()
+                )
+        else:
+            # Just received an image
+            await update.message.reply_text(
+                "🖼️ **Image received!**\n\n"
+                "Use the buttons below to:\n"
+                "• 🔄 Convert format\n"
+                "• 📐 Resize image",
+                parse_mode="Markdown",
+                reply_markup=get_format_keyboard()
+            )
+            
+    except Exception as e:
+        print(f"Image handling error: {e}")
         await update.message.reply_text(
-            f"🔄 Converting image to {format_type.upper()}...",
+            "❌ **Error processing image**\n\n"
+            "Please try again with a different image.",
+            parse_mode="Markdown",
             reply_markup=get_main_keyboard()
-        )
-        
-        # Send back the converted image
-        await update.message.reply_document(
-            document=io.BytesIO(image_bytes),
-            filename=f"converted.{format_type}",
-            caption=f"✅ Converted to {format_type.upper()}",
-            reply_markup=get_main_keyboard()
-        )
-        
-    elif "resize" in action:
-        await update.message.reply_text(
-            "📐 Send the desired size (512, 768, or 1024)",
-            reply_markup=get_size_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            "🖼️ Image received!\n"
-            "Use the buttons below to convert or resize it.",
-            reply_markup=get_format_keyboard()
         )
 
 # ==================== MAIN FUNCTION ====================
 def main():
     """Start the bot"""
     print("🚀 Starting PixelForgeBot...")
+    print(f"📊 Daily limit: {DAILY_LIMIT} images per user")
     
+    # Build application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("usage", usage_command))
     
     # Add callback handler for buttons
     application.add_handler(CallbackQueryHandler(button_handler))
