@@ -2,11 +2,10 @@ import os
 import io
 import asyncio
 import aiohttp
-import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 
 # ==================== CONFIGURATION ====================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
@@ -432,7 +431,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle image messages"""
-    user_id = str(update.effective_user.id)
     action = context.user_data.get("action", "")
     
     try:
@@ -520,8 +518,14 @@ def main():
     print("🚀 Starting PixelForgeBot...")
     print(f"📊 Daily limit: {DAILY_LIMIT} images per user")
     
-    # Build application
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    # Build application with timeout settings
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .build()
+    )
     
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
